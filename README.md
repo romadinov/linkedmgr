@@ -6,9 +6,14 @@ companies, and an optional first comment (e.g. the link).
 
 ## Setup, step by step
 
-Requires macOS 15+, Xcode, and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+Requires macOS 15+.
 
-1. **Install** — `./install.sh` builds a Release copy into `/Applications` and opens it.
+1. **Install** — download the notarized `LinkedMgr-x.y.z.zip` from
+   [Releases](https://github.com/romadinov/linkedmgr/releases/latest), unzip, and move LinkedMgr
+   to `/Applications`. Or build it yourself: with Xcode and
+   [XcodeGen](https://github.com/yonaskolb/XcodeGen), `./install.sh` builds a Release copy into
+   `/Applications` and opens it (set your own `DEVELOPMENT_TEAM` and `CODE_SIGN_IDENTITY` in
+   `project.yml` first).
    (It must live in /Applications: the background publisher is registered against that path.)
 2. **Create a LinkedIn developer app** at <https://www.linkedin.com/developers/apps> → *Create app*.
    It must be linked to a company page; any page you admin works, or create a placeholder
@@ -81,3 +86,9 @@ log stream --info --predicate 'subsystem == "com.ideahelix.linkedmgr"'  # live l
 
 Data lives in `~/Library/Application Support/LinkedMgr/` (`LinkedMgr.store` + `Images/` + `Videos/`);
 the client secret and token are in the Keychain.
+
+## Releasing
+
+`./release.sh 1.0.1` builds with the Developer ID certificate, notarizes and staples the app,
+tags `v1.0.1`, and publishes a GitHub release with the zip. One-time setup:
+`xcrun notarytool store-credentials linkedmgr-notary --apple-id <email> --team-id <team>`.

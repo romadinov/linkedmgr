@@ -17,7 +17,7 @@ targets:
     platform: macOS
     sources:
       - path: LinkedMgr
-        excludes: [LaunchAgents]
+        excludes: [LaunchAgents, LinkedMgr.entitlements]
       - path: LinkedMgr/LaunchAgents/com.ideahelix.linkedmgr.agent.plist
         buildPhase:
           copyFiles:
@@ -33,6 +33,12 @@ targets:
         INFOPLIST_KEY_NSCameraUsageDescription: LinkedMgr uses the camera to take photos for your posts.
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: LinkedMgr attaches photos from your library to your posts.
         ENABLE_HARDENED_RUNTIME: NO
+        CODE_SIGN_ENTITLEMENTS: LinkedMgr/LinkedMgr.entitlements
+      configs:
+        # Release builds are notarized (see release.sh), which requires the hardened runtime.
+        Release:
+          ENABLE_HARDENED_RUNTIME: YES
+          OTHER_CODE_SIGN_FLAGS: --timestamp
   LinkedMgrTests:
     type: bundle.unit-test
     platform: macOS
