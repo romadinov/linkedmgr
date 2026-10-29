@@ -22,7 +22,7 @@ enum LinkedInError: LocalizedError {
 }
 
 /// Thin wrapper over the LinkedIn REST endpoints LinkedMgr uses:
-/// Images (upload), Posts (create), socialActions/comments (first comment),
+/// Images and Videos (upload), Posts (create), socialActions/comments (first comment),
 /// and organizations (vanity-name lookup for company tags).
 struct LinkedInClient: Sendable {
     let token: String
@@ -94,12 +94,72 @@ struct LinkedInClient: Sendable {
         return initResponse.value.image
     }
 
+    // MARK: Videos
+
+    /// Uploads a video in the parts LinkedIn asks for (4 MB each) and returns its `urn:li:video:…`.
+    /// LinkedIn then processes it; check `videoStatus` before posting.
+    func uploadVideo(at url: URL) async throws -> String {
+        struct Init: Decodable {
+            struct Part: Decodable { let uploadUrl: String; let firstByte: UInt64; let lastByte: UInt64 }
+            struct Value: Decodable { let video: String; let uploadToken: String?; let uploadInstructions: [Part] }
+            let value: Value
+        }
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        let body: [String: Any] = ["initializeUploadRequest": [
+            "owner": personURN, "fileSizeBytes": size, "uploadCaptions": false, "uploadThumbnail": false,
+        ]]
+        let (data, _) = try await rest("POST", "videos?action=initializeUpload", json: body)
+        let upload = try JSONDecoder().decode(Init.self, from: data).value
+
+        let file = try FileHandle(forReadingFrom: url)
+        defer { try? file.close() }
+        var partIDs: [String] = []
+        for part in upload.uploadInstructions {
+            try file.seek(toOffset: part.firstByte)
+            var put = URLRequest(url: URL(string: part.uploadUrl)!)
+            put.httpMethod = "PUT"
+            put.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            put.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+            put.httpBody = try file.read(upToCount: Int(part.lastByte - part.firstByte + 1)) ?? Data()
+            let (_, response) = try await Self.send(put)
+            guard let etag = response.value(forHTTPHeaderField: "ETag") else {
+                throw LinkedInError.message("LinkedIn didn't confirm a video part upload (no ETag).")
+            }
+            partIDs.append(etag)
+        }
+
+        let finalize: [String: Any] = ["finalizeUploadRequest": [
+            "video": upload.video, "uploadToken": upload.uploadToken ?? "", "uploadedPartIds": partIDs,
+        ]]
+        _ = try await rest("POST", "videos?action=finalizeUpload", json: finalize)
+        return upload.video
+    }
+
+    /// `AVAILABLE`, `PROCESSING`, `WAITING_UPLOAD` or `PROCESSING_FAILED` (with a reason).
+    func videoStatus(_ urn: String) async throws -> (status: String, failureReason: String?) {
+        let (data, _) = try await rest("GET", "videos/\(Self.encode(urn))")
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return (json?["status"] as? String ?? "", json?["processingFailureReason"] as? String)
+    }
+
     // MARK: Posts
 
     /// Creates a public post and returns its URN (`urn:li:share:…` or `urn:li:ugcPost:…`).
-    func createPost(commentary: String, images: [(urn: String, altText: String)]) async throws -> String {
+    func createPost(commentary: String, images: [(urn: String, altText: String)],
+                    video: (urn: String, title: String)? = nil) async throws -> String {
+        let body = Self.postBody(author: personURN, commentary: commentary, images: images, video: video)
+        let (_, response) = try await rest("POST", "posts", json: body)
+        guard let urn = response.value(forHTTPHeaderField: "x-restli-id") else {
+            throw LinkedInError.message("LinkedIn accepted the post but didn't return its ID.")
+        }
+        return urn
+    }
+
+    /// One image or one video goes in `content.media`; 2–20 images in `content.multiImage`.
+    static func postBody(author: String, commentary: String, images: [(urn: String, altText: String)],
+                         video: (urn: String, title: String)?) -> [String: Any] {
         var body: [String: Any] = [
-            "author": personURN,
+            "author": author,
             "commentary": commentary,
             "visibility": "PUBLIC",
             "distribution": [
@@ -113,16 +173,14 @@ struct LinkedInClient: Sendable {
         func media(_ image: (urn: String, altText: String)) -> [String: Any] {
             image.altText.isEmpty ? ["id": image.urn] : ["id": image.urn, "altText": image.altText]
         }
-        if images.count == 1 {
+        if let video {
+            body["content"] = ["media": video.title.isEmpty ? ["id": video.urn] : ["id": video.urn, "title": video.title]]
+        } else if images.count == 1 {
             body["content"] = ["media": media(images[0])]
         } else if images.count > 1 {
             body["content"] = ["multiImage": ["images": images.map(media)]]
         }
-        let (_, response) = try await rest("POST", "posts", json: body)
-        guard let urn = response.value(forHTTPHeaderField: "x-restli-id") else {
-            throw LinkedInError.message("LinkedIn accepted the post but didn't return its ID.")
-        }
-        return urn
+        return body
     }
 
     // MARK: Comments

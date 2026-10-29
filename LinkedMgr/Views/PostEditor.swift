@@ -15,6 +15,7 @@ struct PostEditor: View {
     @State private var importError: String?
     @State private var confirmPublishNow = false
     @State private var editingAltText: PostImage?
+    @State private var preparingVideo = false
 
     private static let maxLength = 3000
     private var locked: Bool { !post.isEditable }
@@ -46,7 +47,9 @@ struct PostEditor: View {
                     }
                 }
 
-                section("Pictures") { imagesSection }
+                section("Pictures or video") {
+                    if let video = post.videoFileName { videoSection(video) } else { imagesSection }
+                }
 
                 section("First comment") {
                     TextEditor(text: $post.commentText, selection: $commentSelection)
@@ -73,14 +76,31 @@ struct PostEditor: View {
         }
         .navigationTitle(post.displayTitle)
         .toolbar { scheduleToolbar }
-        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.image], allowsMultipleSelection: true) { result in
-            if case .success(let urls) = result { addImages(urls.map { url in { try ImageStore.save(contentsOf: url) } }) }
+        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.image, .movie], allowsMultipleSelection: true) { result in
+            guard case .success(let urls) = result else { return }
+            let isVideo = { (url: URL) in UTType(filenameExtension: url.pathExtension)?.conforms(to: .movie) == true }
+            if let video = urls.first(where: isVideo) {
+                if urls.count > 1 { importError = "A LinkedIn post has either pictures or one video. Adding only the video." }
+                addVideo(from: video)
+            } else {
+                addImages(urls.map { url in { try ImageStore.save(contentsOf: url) } })
+            }
         }
         .onChange(of: photoItems) { _, items in
             guard !items.isEmpty else { return }
             Task {
                 var loaders: [() throws -> String] = []
                 for item in items {
+                    if item.supportedContentTypes.contains(where: { $0.conforms(to: .movie) }) {
+                        if items.count > 1 { importError = "A LinkedIn post has either pictures or one video. Adding only the video." }
+                        if let movie = try? await item.loadTransferable(type: PickedMovie.self) {
+                            addVideo(from: movie.url, deleteAfter: true)
+                        } else {
+                            importError = "Couldn't load that video from Photos."
+                        }
+                        loaders = []
+                        break
+                    }
                     if let data = try? await item.loadTransferable(type: Data.self) {
                         loaders.append { try ImageStore.save(data) }
                     }
@@ -94,7 +114,7 @@ struct PostEditor: View {
             loadProviders(providers)
             return true
         }
-        .alert("Couldn't add picture", isPresented: .constant(importError != nil)) {
+        .alert("Couldn't add that", isPresented: .constant(importError != nil)) {
             Button("OK") { importError = nil }
         } message: { Text(importError ?? "") }
         .confirmationDialog("Publish this post to LinkedIn now?", isPresented: $confirmPublishNow) {
@@ -155,7 +175,7 @@ struct PostEditor: View {
                                   editAlt: { editingAltText = image })
                     }
                     if post.images.isEmpty {
-                        Text("No pictures — text-only post. Drop images here too.")
+                        Text("No pictures — text-only post. Drop images here, or pick one video.")
                             .foregroundStyle(.secondary).frame(height: 120)
                     }
                 }
@@ -165,14 +185,36 @@ struct PostEditor: View {
                 return true
             }
             HStack {
-                PhotosPicker(selection: $photoItems, maxSelectionCount: 20, matching: .images) {
+                PhotosPicker(selection: $photoItems, maxSelectionCount: 20, matching: .any(of: [.images, .videos])) {
                     Label("Photos…", systemImage: "photo.on.rectangle")
                 }
                 Button { showFileImporter = true } label: { Label("Files…", systemImage: "folder") }
                 Text("Camera: File ▸ Import from iPhone ▸ Take Photo")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
+                if preparingVideo {
+                    ProgressView().controlSize(.small)
+                    Text("Preparing video…").font(.caption).foregroundStyle(.secondary)
+                }
                 Text("\(post.images.count) / 20").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func videoSection(_ fileName: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            VideoThumbnail(fileName: fileName, size: 160)
+                .onTapGesture { post.videoURL.map { NSWorkspace.shared.open($0) } }
+                .help("Play")
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("Video title (optional, shown with the video)", text: $post.videoTitle)
+                VideoFacts(fileName: fileName)
+                HStack {
+                    Button("Play") { post.videoURL.map { NSWorkspace.shared.open($0) } }
+                    Button("Remove Video", role: .destructive) { removeVideo() }
+                }
+                Text("LinkedMgr uploads the video up to 2 hours before its slot so LinkedIn can process it in time. A post has either pictures or one video.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -200,7 +242,7 @@ struct PostEditor: View {
 
     private var canPublish: Bool {
         let length = LittleText.displayText(post.text).count
-        return LinkedInAccount.shared.isConnected && length > 0 && length <= Self.maxLength
+        return LinkedInAccount.shared.isConnected && !preparingVideo && length > 0 && length <= Self.maxLength
     }
 
     // MARK: Actions
@@ -224,6 +266,10 @@ struct PostEditor: View {
     }
 
     private func addImages(_ loaders: [() throws -> String]) {
+        guard post.videoFileName == nil || loaders.isEmpty else {
+            importError = "A LinkedIn post has either pictures or one video. Remove the video first."
+            return
+        }
         var order = (post.images.map(\.order).max() ?? -1) + 1
         for load in loaders where post.images.count < 20 {
             do {
@@ -233,6 +279,38 @@ struct PostEditor: View {
                 importError = error.localizedDescription
             }
         }
+        try? context.save()
+    }
+
+    /// Copies or converts the video (can take a while for long iPhone clips).
+    private func addVideo(from url: URL, deleteAfter: Bool = false) {
+        guard post.images.isEmpty else {
+            importError = "A LinkedIn post has either pictures or one video. Remove the pictures first."
+            if deleteAfter { try? FileManager.default.removeItem(at: url) }
+            return
+        }
+        preparingVideo = true
+        Task {
+            defer {
+                preparingVideo = false
+                if deleteAfter { try? FileManager.default.removeItem(at: url) }
+            }
+            do {
+                let name = try await VideoStore.save(contentsOf: url)
+                if let old = post.videoFileName { VideoStore.delete(old) }
+                post.videoFileName = name
+                post.videoURN = nil
+                try? context.save()
+            } catch {
+                importError = error.localizedDescription
+            }
+        }
+    }
+
+    private func removeVideo() {
+        post.videoFileName.map(VideoStore.delete)
+        post.videoFileName = nil
+        post.videoURN = nil
         try? context.save()
     }
 
@@ -355,7 +433,9 @@ struct PostPreview: View {
                 }
             }
             Text(rendered(post.text)).textSelection(.enabled)
-            if !post.orderedImages.isEmpty {
+            if let video = post.videoFileName {
+                VideoThumbnail(fileName: video, size: 300)
+            } else if !post.orderedImages.isEmpty {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 4)], spacing: 4) {
                     ForEach(post.orderedImages.prefix(4)) { image in
                         Thumbnail(image: image, size: 140)
@@ -393,5 +473,39 @@ struct PostPreview: View {
             }
         }
         return out
+    }
+}
+
+/// Length and size of the attached video.
+private struct VideoFacts: View {
+    let fileName: String
+    @State private var duration: Double?
+
+    var body: some View {
+        let url = VideoStore.directory.appendingPathComponent(fileName)
+        let bytes = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        HStack(spacing: 12) {
+            if let duration {
+                Label(Duration.seconds(duration).formatted(.time(pattern: .minuteSecond)), systemImage: "clock")
+            }
+            Label(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file), systemImage: "internaldrive")
+        }
+        .font(.caption).foregroundStyle(.secondary)
+        .task(id: fileName) { duration = await VideoStore.duration(fileName) }
+    }
+}
+
+/// A video picked in Photos, copied to a temporary file (videos are too big to load as Data).
+struct PickedMovie: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .movie) { SentTransferredFile($0.url) } importing: { received in
+            let copy = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension(received.file.pathExtension)
+            try FileManager.default.copyItem(at: received.file, to: copy)
+            return Self(url: copy)
+        }
     }
 }

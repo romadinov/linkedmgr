@@ -189,7 +189,11 @@ struct PostRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Thumbnail(image: post.orderedImages.first, size: 44)
+            if let video = post.videoFileName {
+                VideoThumbnail(fileName: video, size: 44)
+            } else {
+                Thumbnail(image: post.orderedImages.first, size: 44)
+            }
             VStack(alignment: .leading, spacing: 3) {
                 Text(post.displayTitle).lineLimit(1).font(.headline)
                 HStack(spacing: 6) {
@@ -203,6 +207,7 @@ struct PostRow: View {
                 .font(.caption)
                 HStack(spacing: 8) {
                     if post.images.count > 0 { Label("\(post.images.count)", systemImage: "photo") }
+                    if post.videoFileName != nil { Label("Video", systemImage: "video") }
                     if post.hasComment { Label("Comment", systemImage: "link") }
                     if !LittleText.unresolvedMentions(post.text).isEmpty { Label("Manual tags", systemImage: "at") }
                 }
@@ -260,6 +265,33 @@ struct Thumbnail: View {
     }
 }
 
+/// A frame from the video with a play badge.
+struct VideoThumbnail: View {
+    let fileName: String
+    let size: CGFloat
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().scaledToFill()
+            } else {
+                Image(systemName: "video").foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: size, height: size)
+        .background(.quaternary)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            Image(systemName: "play.circle.fill")
+                .font(.system(size: size / 3))
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(.white, .black.opacity(0.5))
+        }
+        .task(id: fileName) { image = await VideoStore.thumbnail(fileName, maxSize: size) }
+    }
+}
+
 /// Post operations shared by the lists, plan and editor.
 @MainActor
 enum Scheduling {
@@ -282,6 +314,8 @@ enum Scheduling {
         let copy = Post(title: post.title.isEmpty ? "" : post.title + " (copy)", text: post.text)
         copy.commentText = post.commentText
         copy.commentDelayMinutes = post.commentDelayMinutes
+        copy.videoTitle = post.videoTitle
+        copy.videoFileName = post.videoFileName.flatMap { try? VideoStore.copy($0) }
         context.insert(copy)
         for image in post.orderedImages {
             if let data = try? Data(contentsOf: image.url), let name = try? ImageStore.save(data) {
@@ -295,6 +329,7 @@ enum Scheduling {
 
     static func delete(_ post: Post, context: ModelContext) {
         post.images.forEach { ImageStore.delete($0.fileName) }
+        post.videoFileName.map(VideoStore.delete)
         context.delete(post)
         try? context.save()
     }

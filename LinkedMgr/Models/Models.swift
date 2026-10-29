@@ -44,6 +44,14 @@ final class Post {
     @Relationship(deleteRule: .cascade, inverse: \PostImage.post)
     var images: [PostImage] = []
 
+    /// A post has either pictures or one video (LinkedIn allows only one kind of media).
+    /// File name inside `VideoStore.directory`.
+    var videoFileName: String?
+    var videoTitle: String = ""
+    /// `urn:li:video:…` once uploaded. Uploaded ahead of the slot so LinkedIn has time
+    /// to process it; cleared whenever the video is replaced.
+    var videoURN: String?
+
     /// Optional first comment (typically the link), posted after the post goes live.
     var commentText: String = ""
     var commentDelayMinutes: Int = 1
@@ -71,6 +79,10 @@ final class Post {
 
     var orderedImages: [PostImage] {
         images.sorted { $0.order < $1.order }
+    }
+
+    var videoURL: URL? {
+        videoFileName.map { VideoStore.directory.appendingPathComponent($0) }
     }
 
     var hasComment: Bool {

@@ -12,9 +12,12 @@ let agentLog = Logger(subsystem: "com.ideahelix.linkedmgr", category: "agent")
 /// passed while the Mac slept is still published on wake within the grace window;
 /// later than that it's marked Missed so a stale "Good morning" post doesn't go out at 6 pm.
 /// Network failures (e.g. Wi-Fi not back yet after wake) are retried on the next tick.
+/// Videos are uploaded up to two hours ahead, since LinkedIn must process them before
+/// they can be posted; a post whose video is still processing waits, within the grace window.
 @MainActor
 final class PublishEngine {
     static let tickInterval: TimeInterval = 30
+    static let videoLeadTime: TimeInterval = 2 * 3600
 
     /// Hours after the slot during which a late post is still published.
     static var graceHours: Int {
@@ -25,6 +28,10 @@ final class PublishEngine {
     private let container: ModelContainer
     private var busy = false
     private var activity: NSObjectProtocol?
+    /// Last early-upload attempt per post, so a failing 500 MB upload isn't retried every tick.
+    private var videoAttempts: [UUID: Date] = [:]
+
+    private struct VideoNotReady: Error {}
 
     init(container: ModelContainer) {
         self.container = container
@@ -49,6 +56,13 @@ final class PublishEngine {
         let posts = (try? context.fetch(FetchDescriptor<Post>())) ?? []
         let now = Date()
         updateSleepAssertion(posts: posts, now: now)
+
+        for post in posts where post.status == .scheduled && post.videoFileName != nil && post.videoURN == nil {
+            guard let due = post.scheduledAt, due > now, due.timeIntervalSince(now) < Self.videoLeadTime,
+                  videoAttempts[post.id].map({ now.timeIntervalSince($0) > 600 }) ?? true else { continue }
+            videoAttempts[post.id] = now
+            await uploadVideoEarly(post, context: context)
+        }
 
         for post in posts where post.status == .scheduled {
             guard let due = post.scheduledAt, due <= now else { continue }
@@ -83,11 +97,17 @@ final class PublishEngine {
         post.lastError = nil
         save(context)
         do {
+            var video: (urn: String, title: String)?
             var uploaded: [(urn: String, altText: String)] = []
-            for image in post.orderedImages {
-                uploaded.append((try await client.uploadImage(at: image.url), image.altText))
+            if let videoURL = post.videoURL {
+                video = (try await readyVideo(post, file: videoURL, client: client, context: context),
+                         post.videoTitle.isEmpty ? post.title : post.videoTitle)
+            } else {
+                for image in post.orderedImages {
+                    uploaded.append((try await client.uploadImage(at: image.url), image.altText))
+                }
             }
-            let urn = try await client.createPost(commentary: LittleText.commentary(post.text), images: uploaded)
+            let urn = try await client.createPost(commentary: LittleText.commentary(post.text), images: uploaded, video: video)
             post.postURN = urn
             post.publishedAt = Date()
             post.status = .published
@@ -102,6 +122,10 @@ final class PublishEngine {
             if post.commentStatus == .pending, post.commentDelayMinutes == 0 {
                 await postComment(post, context: context)
             }
+        } catch is VideoNotReady {
+            post.status = .scheduled
+            post.lastError = "Waiting for LinkedIn to finish processing the video."
+            save(context)
         } catch {
             agentLog.error("Publish failed: \(error.localizedDescription, privacy: .public)")
             if Self.isTransient(error) {
@@ -114,6 +138,42 @@ final class PublishEngine {
                 notify("Couldn't publish “\(post.displayTitle)”", error.localizedDescription)
             }
             save(context)
+        }
+    }
+
+    /// Uploads the video if needed and returns its URN once LinkedIn has processed it.
+    private func readyVideo(_ post: Post, file: URL, client: LinkedInClient, context: ModelContext) async throws -> String {
+        let urn: String
+        if let existing = post.videoURN {
+            urn = existing
+        } else {
+            agentLog.info("Uploading video for \(post.displayTitle, privacy: .public)")
+            urn = try await client.uploadVideo(at: file)
+            post.videoURN = urn
+            save(context)
+        }
+        let state = try await client.videoStatus(urn)
+        switch state.status {
+        case "AVAILABLE":
+            return urn
+        case "PROCESSING_FAILED":
+            post.videoURN = nil
+            throw LinkedInError.message("LinkedIn couldn't process the video (\(state.failureReason ?? "no reason given")). Re-export it as an MP4 and try again.")
+        default:
+            agentLog.info("Video \(urn, privacy: .public) is \(state.status, privacy: .public); waiting")
+            throw VideoNotReady()
+        }
+    }
+
+    private func uploadVideoEarly(_ post: Post, context: ModelContext) async {
+        guard let client = LinkedInAccount.currentClient(), let file = post.videoURL else { return }
+        do {
+            agentLog.info("Uploading video ahead for \(post.displayTitle, privacy: .public)")
+            post.videoURN = try await client.uploadVideo(at: file)
+            save(context)
+        } catch {
+            // Not fatal: publishing uploads it again and reports any error then.
+            agentLog.error("Early video upload failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 

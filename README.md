@@ -1,7 +1,7 @@
 # LinkedMgr
 
 A macOS app for planning and auto-publishing LinkedIn posts: a content plan of
-working-day slots, posts written ahead with text and pictures, tags for people and
+working-day slots, posts written ahead with text and pictures or a video, tags for people and
 companies, and an optional first comment (e.g. the link).
 
 ## Setup, step by step
@@ -60,6 +60,11 @@ log stream --info --predicate 'subsystem == "com.ideahelix.linkedmgr"'  # live l
 - **Pictures** — Photos library, Files, drag-and-drop, or the iPhone camera via
   *File ▸ Import from iPhone or iPad ▸ Take Photo* (Continuity Camera). HEIC is converted
   to JPEG; up to 20 per post (LinkedIn's multi-image limit).
+- **Video** — one per post, instead of pictures (LinkedIn doesn't mix them). From Photos or
+  Files; iPhone .mov/HEVC is converted to 1080p H.264 MP4. LinkedIn's limits: 3 s – 30 min,
+  up to 500 MB. The background publisher uploads it up to 2 hours before the slot, because
+  LinkedIn must finish processing a video before it can be posted; if it's still processing
+  at the slot, the post waits (within the grace window).
 - **Tags** — save people and companies under *People & Companies*, then insert with the
   **@ Tag** menu. Tags are stored as `@[Name](urn:li:…)`; the name must match their
   LinkedIn name exactly.
@@ -74,5 +79,5 @@ log stream --info --predicate 'subsystem == "com.ideahelix.linkedmgr"'  # live l
   and publishes on wake if a slot passed less than the grace window ago (default 2 h);
   older ones are marked *Missed*.
 
-Data lives in `~/Library/Application Support/LinkedMgr/` (`LinkedMgr.store` + `Images/`);
+Data lives in `~/Library/Application Support/LinkedMgr/` (`LinkedMgr.store` + `Images/` + `Videos/`);
 the client secret and token are in the Keychain.
