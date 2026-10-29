@@ -98,7 +98,12 @@ struct PostEditor: View {
             Button("OK") { importError = nil }
         } message: { Text(importError ?? "") }
         .confirmationDialog("Publish this post to LinkedIn now?", isPresented: $confirmPublishNow) {
-            Button("Publish Now") { Task { await Publisher.shared.publish(post) } }
+            Button("Publish Now") {
+                post.scheduledAt = Date()
+                post.status = .scheduled
+                post.lastError = nil
+                StoreRefresher.shared.commitAndKick()
+            }
         }
         .sheet(item: $editingAltText) { image in AltTextSheet(image: image) }
         .onChange(of: post.text) { try? context.save() }
@@ -124,7 +129,10 @@ struct PostEditor: View {
                 }
                 Spacer()
                 if post.commentStatus == .failed {
-                    Button("Retry Comment") { Task { await Publisher.shared.postComment(post) } }
+                    Button("Retry Comment") {
+                        post.commentStatus = .pending
+                        StoreRefresher.shared.commitAndKick()
+                    }
                 }
                 if let url = post.postURL { Link("Open on LinkedIn", destination: url) }
             }

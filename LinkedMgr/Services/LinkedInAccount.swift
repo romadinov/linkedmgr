@@ -50,6 +50,15 @@ final class LinkedInAccount {
         return tokenExpiresAt.timeIntervalSinceNow < 7 * 86_400
     }
 
+    /// Reads the credentials fresh from the Keychain and defaults, so the agent picks up a
+    /// reconnect made in the app without restarting.
+    nonisolated static func currentClient() -> LinkedInClient? {
+        let d = UserDefaults.standard
+        guard let token = Keychain.get("accessToken"), let personURN = d.string(forKey: "personURN") else { return nil }
+        if let exp = d.object(forKey: "tokenExpiresAt") as? Date, exp <= Date() { return nil }
+        return LinkedInClient(token: token, personURN: personURN)
+    }
+
     var client: LinkedInClient? {
         guard isConnected, let accessToken, let personURN else { return nil }
         return LinkedInClient(token: accessToken, personURN: personURN)

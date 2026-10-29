@@ -15,7 +15,14 @@ targets:
   LinkedMgr:
     type: application
     platform: macOS
-    sources: [LinkedMgr]
+    sources:
+      - path: LinkedMgr
+        excludes: [LaunchAgents]
+      - path: LinkedMgr/LaunchAgents/com.ideahelix.linkedmgr.agent.plist
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Library/LaunchAgents
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ideahelix.linkedmgr

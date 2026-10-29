@@ -68,7 +68,7 @@ private struct AccountSettings: View {
 private struct ScheduleSettings: View {
     @State private var schedule = PostingSchedule.load()
     @State private var newSkipDay = Date()
-    @State private var graceHours = Publisher.shared.graceHours
+    @State private var graceHours = PublishEngine.graceHours
     @State private var wakeMessage: String?
 
     var body: some View {
@@ -117,15 +117,15 @@ private struct ScheduleSettings: View {
 
             Section {
                 Stepper("Still publish up to \(graceHours) h late", value: $graceHours, in: 0...12)
-                    .onChange(of: graceHours) { _, v in Publisher.shared.graceHours = v }
+                    .onChange(of: graceHours) { _, v in PublishEngine.graceHours = v }
                 Button("Wake This Mac Before Posting Time…") { scheduleWake() }
                 if let wakeMessage { Text(wakeMessage).font(.caption).foregroundStyle(.secondary) }
             } header: {
                 Text("If the Mac is asleep")
             } footer: {
                 Text("""
-                LinkedIn can't schedule personal posts itself, so LinkedMgr must be running. A post that \
-                falls due while the Mac sleeps goes out on wake within the window above, otherwise it's \
+                LinkedIn can't schedule personal posts itself, so the background publisher must be on \
+                (Settings ▸ General) and the Mac awake. A post that falls due while the Mac sleeps goes out on wake within the window above, otherwise it's \
                 marked Missed. “Wake This Mac” sets a daily power-on/wake (pmset, asks for your password) \
                 5 minutes before your earliest posting time; it works on power, not with the lid closed on battery.
                 """)
@@ -184,6 +184,7 @@ private struct GeneralSettings: View {
 
     var body: some View {
         Form {
+            BackgroundPublisherSection()
             Section {
                 Toggle("Open LinkedMgr at login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, on in
@@ -196,7 +197,7 @@ private struct GeneralSettings: View {
                         }
                     }
                 if let loginError { Text(loginError).font(.caption).foregroundStyle(.red) }
-                Text("Recommended: scheduled posts only go out while LinkedMgr is running. Closing the window keeps it in the menu bar.")
+                Text("Optional — only for the menu bar icon. Publishing is done by the background publisher, app open or not.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Advanced") {
@@ -206,5 +207,66 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// Turns the background publisher (the launchd agent) on and off.
+struct BackgroundPublisherSection: View {
+    @State private var status = Agent.service.status
+    @State private var error: String?
+
+    var body: some View {
+        Section {
+            LabeledContent("Background publisher") {
+                Label(statusText, systemImage: status == .enabled ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(status == .enabled ? .green : .orange)
+            }
+            HStack {
+                switch status {
+                case .enabled:
+                    Button("Turn Off") { change { try Agent.service.unregister() } }
+                case .requiresApproval:
+                    Button("Open Login Items Settings…") { SMAppService.openSystemSettingsLoginItems() }
+                default:
+                    Button("Turn On") { change { try Agent.service.register() } }
+                }
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+            Text("""
+            Publishes scheduled posts and first comments in the background, whether or not this \
+            window is open, and starts automatically when you log in. macOS lists it under \
+            System Settings ▸ General ▸ Login Items & Extensions as “LinkedMgr”; it must be allowed there. \
+            Keep LinkedMgr in /Applications — moving the app breaks the publisher until you turn it off and on.
+            """)
+            .font(.caption).foregroundStyle(.secondary)
+        }
+        .task {
+            // Approval happens in System Settings, so keep polling while visible.
+            while !Task.isCancelled {
+                status = Agent.service.status
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+
+    private var statusText: String {
+        switch status {
+        case .enabled: "Running"
+        case .requiresApproval: "Needs approval in System Settings"
+        case .notRegistered: "Off — scheduled posts won't go out"
+        case .notFound: "Not found in app bundle"
+        @unknown default: "Unknown"
+        }
+    }
+
+    private func change(_ action: () throws -> Void) {
+        do {
+            try action()
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+        status = Agent.service.status
+        if status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
     }
 }

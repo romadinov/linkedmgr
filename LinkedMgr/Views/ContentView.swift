@@ -1,3 +1,4 @@
+import ServiceManagement
 import SwiftData
 import SwiftUI
 
@@ -44,7 +45,13 @@ struct ContentView: View {
                 }
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)
-            .safeAreaInset(edge: .bottom) { AccountBadge().padding(10) }
+            .safeAreaInset(edge: .bottom) {
+                VStack(alignment: .leading, spacing: 8) {
+                    AgentWarning()
+                    AccountBadge()
+                }
+                .padding(10)
+            }
         } content: {
             switch sidebar ?? .plan {
             case .plan:
@@ -110,6 +117,30 @@ struct ContentView: View {
         if slot == nil, sidebar != .plan { sidebar = .drafts }
         if sidebar == .contacts { sidebar = .drafts }
         selectedPost = post.persistentModelID
+    }
+}
+
+/// Shown when the background publisher isn't running, since then nothing gets published.
+struct AgentWarning: View {
+    @State private var enabled = true
+
+    var body: some View {
+        Group {
+            if !enabled {
+                SettingsLink {
+                    Label("Background publisher is off — scheduled posts won't go out", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.orange)
+                        .multilineTextAlignment(.leading)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .task {
+            while !Task.isCancelled {
+                enabled = Agent.service.status == .enabled
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
     }
 }
 

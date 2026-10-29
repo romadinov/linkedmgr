@@ -3,29 +3,17 @@ import SwiftData
 import SwiftUI
 import UserNotifications
 
-@main
+/// Launched from main.swift unless running as the background agent.
 struct LinkedMgrApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    let container: ModelContainer
-
-    init() {
-        do {
-            container = try ModelContainer(for: Post.self, PostImage.self, Contact.self)
-        } catch {
-            fatalError("Couldn't open the LinkedMgr database: \(error)")
-        }
-        // Unit tests run inside the app; they must never publish anything.
-        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
-        let container = container
-        Task { @MainActor in Publisher.shared.start(container: container) }
-    }
+    private var store = StoreRefresher.shared
 
     var body: some Scene {
         Window("LinkedMgr", id: "main") {
             ContentView()
                 .frame(minWidth: 960, minHeight: 600)
         }
-        .modelContainer(container)
+        .modelContext(store.context)
         .commands {
             ImportFromDevicesCommands()
             CommandGroup(replacing: .newItem) {
@@ -35,7 +23,7 @@ struct LinkedMgrApp: App {
 
         MenuBarExtra {
             MenuBarView()
-                .modelContainer(container)
+                .modelContext(store.context)
         } label: {
             Image(systemName: "paperplane.circle")
         }
@@ -43,8 +31,45 @@ struct LinkedMgrApp: App {
 
         Settings {
             SettingsView()
-                .modelContainer(container)
+                .modelContext(store.context)
         }
+    }
+}
+
+/// The app's view of the shared database. The agent writes to the same store from another
+/// process; when it signals a change, a fresh context replaces the stale one so lists update.
+@MainActor @Observable
+final class StoreRefresher {
+    static let shared = StoreRefresher()
+
+    let container: ModelContainer
+    private(set) var context: ModelContext
+
+    private init() {
+        do {
+            container = try Store.container()
+        } catch {
+            fatalError("Couldn't open the LinkedMgr database: \(error)")
+        }
+        context = Self.makeContext(container)
+        Signal.changed.observe { StoreRefresher.shared.reload() }
+    }
+
+    func reload() {
+        try? context.save()
+        context = Self.makeContext(container)
+    }
+
+    /// Saves and asks the agent to act now rather than on its next tick.
+    func commitAndKick() {
+        try? context.save()
+        Signal.kick.post()
+    }
+
+    private static func makeContext(_ container: ModelContainer) -> ModelContext {
+        let context = ModelContext(container)
+        context.autosaveEnabled = true
+        return context
     }
 }
 

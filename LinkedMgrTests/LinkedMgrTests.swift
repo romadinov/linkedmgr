@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import LinkedMgr
 
@@ -47,5 +48,48 @@ struct PostingScheduleTests {
         schedule.skipDays = [date(2026, 11, 3)]
         let slot = schedule.nextFreeSlot(after: date(2026, 11, 1), taken: [date(2026, 11, 2, 15)], calendar: calendar)
         #expect(slot == date(2026, 11, 4, 11))
+    }
+}
+
+@MainActor
+struct PublishEngineTests {
+    let container = try! ModelContainer(for: Post.self, PostImage.self, Contact.self,
+                                        configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+
+    func insert(_ configure: (Post) -> Void) -> Post {
+        let post = Post(text: "Hello")
+        configure(post)
+        container.mainContext.insert(post)
+        try! container.mainContext.save()
+        return post
+    }
+
+    func fetch() -> [Post] {
+        try! ModelContext(container).fetch(FetchDescriptor<Post>())
+    }
+
+    @Test func postPastGraceWindowIsMarkedMissed() async {
+        _ = insert { $0.status = .scheduled; $0.scheduledAt = Date().addingTimeInterval(-24 * 3600) }
+        await PublishEngine(container: container).tick()
+        #expect(fetch().first?.status == .missed)
+    }
+
+    @Test func futurePostIsLeftAlone() async {
+        _ = insert { $0.status = .scheduled; $0.scheduledAt = Date().addingTimeInterval(3600) }
+        await PublishEngine(container: container).tick()
+        #expect(fetch().first?.status == .scheduled)
+    }
+
+    @Test func interruptedPublishIsRequeued() {
+        _ = insert { $0.status = .publishing }
+        _ = insert { $0.status = .publishing; $0.postURN = "urn:li:share:1" }
+        PublishEngine(container: container).recoverInterrupted()
+        #expect(Set(fetch().map(\.status)) == [.scheduled, .published])
+    }
+
+    @Test func networkAndServerErrorsAreRetried() {
+        #expect(PublishEngine.isTransient(URLError(.notConnectedToInternet)))
+        #expect(PublishEngine.isTransient(LinkedInError.http(status: 503, body: "")))
+        #expect(!PublishEngine.isTransient(LinkedInError.http(status: 403, body: "")))
     }
 }
