@@ -1,0 +1,39 @@
+name: LinkedMgr
+options:
+  bundleIdPrefix: com.ideahelix
+  deploymentTarget:
+    macOS: "15.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: SZVSSCJQFN
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "Apple Development: Alexey Romadinov (YX3BQV28XL)"
+targets:
+  LinkedMgr:
+    type: application
+    platform: macOS
+    sources: [LinkedMgr]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ideahelix.linkedmgr
+        PRODUCT_NAME: LinkedMgr
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: LinkedMgr
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.social-networking
+        INFOPLIST_KEY_NSCameraUsageDescription: LinkedMgr uses the camera to take photos for your posts.
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: LinkedMgr attaches photos from your library to your posts.
+        ENABLE_HARDENED_RUNTIME: NO
+  LinkedMgrTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [LinkedMgrTests]
+    dependencies:
+      - target: LinkedMgr
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/LinkedMgr.app/Contents/MacOS/LinkedMgr"
